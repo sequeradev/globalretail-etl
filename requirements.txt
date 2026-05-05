@@ -1,0 +1,22 @@
+# ==============================================================================
+# Pinned dependencies for the GlobalRetail ETL pipeline.
+# Versions chosen to be compatible with Airflow 2.9.3 / Python 3.11.
+# ==============================================================================
+
+# MongoDB driver
+pymongo==4.8.0
+dnspython==2.6.1            # required for mongodb+srv:// connection strings
+
+# Data processing
+pandas==2.2.2
+pyarrow==16.1.0             # parquet I/O for staging layer
+
+# HTTP + retries
+requests==2.32.3
+tenacity==8.5.0             # exponential backoff for API calls
+
+# Environment / config
+python-dotenv==1.0.1
+
+# Testing (installed in image so tests can run inside the scheduler container)
+pytest==8.3.2

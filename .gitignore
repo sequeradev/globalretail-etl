@@ -1,0 +1,26 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Airflow runtime
+logs/
+plugins/
+!plugins/.gitkeep
+
+# Staging data
+include/staging/*.parquet
+include/staging/*.csv
+
+# Source dataset (download separately)
+include/data/online_retail.csv
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+.DS_Store
