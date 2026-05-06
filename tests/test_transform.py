@@ -1,6 +1,6 @@
 """Unit tests for the transform stage.
 
-These exercise the pure data-manipulation functions — no Airflow,
+These exercise the pure data-manipulation functions -- no Airflow,
 no MongoDB, no network. Run with:
 
     docker compose run --rm airflow-scheduler bash -lc "cd /opt/airflow && pytest tests/ -v"
@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dags"))
 
 from etl.transform import (  # noqa: E402
+    COUNTRY_ALIASES,
     apply_fx_historical,
     build_fact_records,
     build_quality_report,
@@ -96,6 +97,93 @@ def test_clean_returns_counters_summing_to_input(raw_sales: pd.DataFrame) -> Non
 
 
 # ------------------------------------------------------------------------------
+# Country alias resolution (new tests -- May 2026)
+# ------------------------------------------------------------------------------
+def test_country_aliases_resolve_before_join() -> None:
+    """EIRE, USA, RSA, Channel Islands and Czech Republic must be translated to
+    their REST Countries canonical names so they receive a real region instead
+    of falling back to 'unknown'."""
+    alias_sales = pd.DataFrame(
+        {
+            "InvoiceNo":   ["A1",   "A2",  "A3",              "A4",    "A5"],
+            "StockCode":   ["X",    "Y",   "Z",               "W",     "V"],
+            "Description": ["a",    "b",   "c",               "d",     "e"],
+            "Quantity":    [1,      1,     1,                 1,       1],
+            "UnitPrice":   [10.0,   10.0,  10.0,              10.0,    10.0],
+            "InvoiceDate": pd.to_datetime(["2011-01-01"] * 5, utc=True),
+            "CustomerID":  ["c1",   "c2",  "c3",              "c4",    "c5"],
+            "Country":     ["EIRE", "USA", "Channel Islands",  "RSA",   "Czech Republic"],
+        }
+    )
+    normalized = normalize_sales(alias_sales)
+    expected = {
+        "A1": "ireland",
+        "A2": "united states",
+        "A3": "jersey",
+        "A4": "south africa",
+        "A5": "czechia",
+    }
+    for inv, expected_key in expected.items():
+        row = normalized[normalized["InvoiceNo"] == inv]
+        assert row["country_key"].iloc[0] == expected_key, (
+            f"Invoice {inv}: expected country_key='{expected_key}', "
+            f"got '{row['country_key'].iloc[0]}'"
+        )
+
+
+def test_alias_countries_get_real_region() -> None:
+    """After alias resolution, formerly-unknown countries must receive a region
+    from the API lookup rather than 'unknown'."""
+    alias_sales = pd.DataFrame(
+        {
+            "InvoiceNo":   ["A1"],
+            "StockCode":   ["X"],
+            "Description": ["a"],
+            "Quantity":    [1],
+            "UnitPrice":   [10.0],
+            "InvoiceDate": pd.to_datetime(["2011-01-01"], utc=True),
+            "CustomerID":  ["c1"],
+            "Country":     ["EIRE"],
+        }
+    )
+    api_countries = pd.DataFrame(
+        {
+            "country":    ["Ireland"],
+            "region":     ["Europe"],
+            "population": [5_000_000],
+        }
+    )
+    normalized = normalize_sales(alias_sales)
+    enriched = enrich_with_countries(normalized, normalize_countries(api_countries))
+    assert enriched["region"].iloc[0] == "Europe"
+    assert enriched["population"].iloc[0] == 5_000_000
+
+
+def test_unresolvable_countries_remain_unknown() -> None:
+    """'Unspecified' and 'European Community' have no valid alias and must
+    still fall back to region='unknown' -- not silently dropped."""
+    no_match_sales = pd.DataFrame(
+        {
+            "InvoiceNo":   ["A1",          "A2"],
+            "StockCode":   ["X",           "Y"],
+            "Description": ["a",           "b"],
+            "Quantity":    [1,             1],
+            "UnitPrice":   [10.0,          10.0],
+            "InvoiceDate": pd.to_datetime(["2011-01-01", "2011-01-01"], utc=True),
+            "CustomerID":  ["c1",          "c2"],
+            "Country":     ["Unspecified", "European Community"],
+        }
+    )
+    normalized = normalize_sales(no_match_sales)
+    api_countries = pd.DataFrame(
+        {"country": ["France"], "region": ["Europe"], "population": [65_000_000]}
+    )
+    enriched = enrich_with_countries(normalized, normalize_countries(api_countries))
+    assert len(enriched) == 2
+    assert (enriched["region"] == "unknown").all()
+
+
+# ------------------------------------------------------------------------------
 # Normalization & enrichment
 # ------------------------------------------------------------------------------
 def test_normalize_trims_and_lowercases(raw_sales: pd.DataFrame) -> None:
@@ -154,12 +242,12 @@ def test_fx_falls_back_to_previous_day_for_gaps() -> None:
         {
             "InvoiceNo": ["A1"], "StockCode": ["X"], "Description": ["a"],
             "Quantity": [1], "UnitPrice": [10.0],
-            "InvoiceDate": pd.to_datetime(["2011-01-08"], utc=True),  # gap day
+            "InvoiceDate": pd.to_datetime(["2011-01-08"], utc=True),
             "CustomerID": ["c1"], "Country": ["uk"],
             "region": ["Europe"], "population": [1],
         }
     )
-    rates = {"2011-01-07": 1.20}  # only the previous Friday is known
+    rates = {"2011-01-07": 1.20}
     out = apply_fx_historical(sales, rates)
     assert out["fx_rate_gbp_eur"].iloc[0] == pytest.approx(1.20)
 
@@ -179,14 +267,13 @@ def test_business_key_includes_row_hash(raw_sales, countries, fx_rates) -> None:
 
 def test_business_key_disambiguates_genuine_duplicates() -> None:
     """Two rows with identical (invoice, stock, customer) but different qty
-    must produce different business keys — otherwise upsert would silently
-    overwrite the first with the second."""
+    must produce different business keys."""
     sales = pd.DataFrame(
         {
             "InvoiceNo": ["A1", "A1"],
             "StockCode": ["X", "X"],
             "Description": ["a", "a"],
-            "Quantity": [1, 2],          # same triple, different quantity
+            "Quantity": [1, 2],
             "UnitPrice": [10.0, 10.0],
             "InvoiceDate": pd.to_datetime(["2011-01-01", "2011-01-01"], utc=True),
             "CustomerID": ["c1", "c1"],

@@ -103,6 +103,30 @@ sequenceDiagram
 }
 ```
 
+## Country name resolution
+
+The Online Retail CSV uses non-standard country names that do not match the
+"common" names returned by REST Countries v3.1.  A static alias table in
+`transform.py` (`COUNTRY_ALIASES`) maps them before the enrichment join:
+
+| CSV value | API canonical name | Rows affected |
+|---|---|---|
+| `EIRE` | `Ireland` | ~8,196 |
+| `Channel Islands` | `Jersey` | ~758 |
+| `USA` | `United States` | ~291 |
+| `RSA` | `South Africa` | ~58 |
+| `Czech Republic` | `Czechia` | ~30 |
+
+Two values cannot be mapped to a single country and remain `region = "unknown"`:
+
+| CSV value | Reason |
+|---|---|
+| `Unspecified` | No country information available |
+| `European Community` | Multi-country region, not a single nation |
+
+The alias table is applied in `normalize_sales()` before `enrich_with_countries()`.
+All five alias mappings are covered by unit tests in `tests/test_transform.py`.
+
 ### Indexes on `fact_sales`
 
 | Name | Fields | Purpose |

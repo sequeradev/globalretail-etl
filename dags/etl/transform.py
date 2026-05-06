@@ -15,7 +15,7 @@ Normalization:
 Enrichment:
     * left-join with REST Countries to add `region` and `population`
     * rows whose country does not match fall back to region="unknown",
-      population=0 — we never silently drop them
+      population=0 -- we never silently drop them
 
 Monetary:
     * revenue_gbp = Quantity * UnitPrice  (computed before FX)
@@ -44,9 +44,29 @@ from etl.logger import get_logger, timed
 
 log = get_logger("etl.transform")
 
+# ------------------------------------------------------------------------------
+# Country name aliases
+#
+# The Online Retail CSV uses several non-standard country names that do not
+# match the "common" names returned by REST Countries v3.1.  This mapping is
+# applied *before* the country_key join so those rows receive a real region
+# instead of falling back to "unknown".
+#
+# Verified against REST Countries v3.1 /all?fields=name (May 2026).
+# "Unspecified" and "European Community" have no valid single-country match
+# and are intentionally left out -- they remain region="unknown".
+# ------------------------------------------------------------------------------
+COUNTRY_ALIASES: dict[str, str] = {
+    "eire": "ireland",             # Irish name for Ireland
+    "channel islands": "jersey",   # British Crown Dependency; largest island
+    "usa": "united states",        # CSV abbreviation
+    "rsa": "south africa",         # CSV abbreviation
+    "czech republic": "czechia",   # REST Countries v3 renamed it
+}
+
 
 # ------------------------------------------------------------------------------
-# Pure functions — easy to unit-test
+# Pure functions -- easy to unit-test
 # ------------------------------------------------------------------------------
 def clean_sales(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
     """Drop rows violating the data-quality contract.
@@ -76,11 +96,16 @@ def clean_sales(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
 
 
 def normalize_sales(df: pd.DataFrame) -> pd.DataFrame:
-    """Lowercase and strip whitespace on text fields."""
+    """Lowercase and strip whitespace on text fields.
+
+    Applies COUNTRY_ALIASES after lowercasing so non-standard names in the
+    source CSV (e.g. "EIRE", "USA", "RSA") resolve to the API canonical form
+    before the enrichment join.
+    """
     df = df.copy()
     df["Country"] = df["Country"].str.strip().str.lower()
     df["CustomerID"] = df["CustomerID"].str.strip().str.lower()
-    df["country_key"] = df["Country"]
+    df["country_key"] = df["Country"].map(lambda x: COUNTRY_ALIASES.get(x, x))
     return df
 
 
@@ -124,8 +149,6 @@ def apply_fx_historical(df: pd.DataFrame, fx_rates: dict[str, float]) -> pd.Data
     df["fx_rate_gbp_eur"] = invoice_day.map(fx_aligned).astype("float64")
 
     if df["fx_rate_gbp_eur"].isna().any():
-        # Last-resort fallback: use the median rate so a missing edge date
-        # never blocks the entire load. This is logged loudly so it gets noticed.
         median_rate = float(fx_series.median())
         missing = int(df["fx_rate_gbp_eur"].isna().sum())
         log.warning(
@@ -139,9 +162,7 @@ def apply_fx_historical(df: pd.DataFrame, fx_rates: dict[str, float]) -> pd.Data
 
 
 def _row_hash(row: pd.Series) -> str:
-    """Stable short hash of the value-bearing fields. Used to disambiguate
-    duplicate (invoice, stock, customer) tuples that legitimately exist in
-    the source as separate line items."""
+    """Stable short hash of the value-bearing fields."""
     payload = "|".join(
         str(row[c]) for c in ("InvoiceNo", "StockCode", "CustomerID", "Quantity", "UnitPrice", "InvoiceDate")
     )
@@ -168,9 +189,6 @@ def build_fact_records(df: pd.DataFrame) -> pd.DataFrame:
             "fx_rate_gbp_eur": df["fx_rate_gbp_eur"],
         }
     )
-    # Composite business key: tuple + row hash. The hash makes the key resilient
-    # to genuine duplicates of the same (invoice, stock, customer) triple, which
-    # do appear in the Online Retail dataset as separate adjustment lines.
     row_hash = df.apply(_row_hash, axis=1).reset_index(drop=True)
     out = out.reset_index(drop=True)
     out["row_hash"] = row_hash
@@ -188,7 +206,7 @@ def build_quality_report(
     fact: pd.DataFrame,
 ) -> dict[str, Any]:
     """Single dict summarising the run's data-quality outcome."""
-    total = clean_counters["rows_in"] or 1  # avoid div-by-zero
+    total = clean_counters["rows_in"] or 1
     pct = lambda n: round(100 * n / total, 2)
     unmatched_region = int((fact["region"] == "unknown").sum())
     return {
