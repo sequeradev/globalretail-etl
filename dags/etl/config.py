@@ -49,7 +49,7 @@ def load_config() -> Config:
     return Config(
         csv_path=Path(os.environ.get("CSV_PATH", "/opt/airflow/include/data/online_retail.csv")),
         countries_api_url="https://restcountries.com/v3.1/all?fields=name,region,population",
-        frankfurter_api_url="https://api.frankfurter.dev/v1/latest",
+        frankfurter_api_url="https://api.frankfurter.dev/v1",
         base_currency="GBP",
         target_currency="EUR",
         staging_dir=Path(os.environ.get("STAGING_DIR", "/opt/airflow/include/staging")),
